@@ -11,6 +11,7 @@ Squeeze Bot scans a stock universe during market hours, scores potential squeeze
 <img width="542" height="260" alt="Screenshot 2026-05-12 at 12 18 11 PM" src="https://github.com/user-attachments/assets/353c0eef-f231-46a3-9681-95e257bc76a4" />
 <img width="339" height="308" alt="Screenshot 2026-05-10 at 1 17 26 PM" src="https://github.com/user-attachments/assets/40ea81c5-129f-4fc4-a67a-432c50210f1a" />
 <img width="531" height="691" alt="Screenshot 2026-05-12 at 12 19 07 PM" src="https://github.com/user-attachments/assets/f0b02c37-53a3-418e-8800-3cc65620c3a6" />
+
 ---
 
 ## ⚡ Features
