@@ -1,0 +1,16 @@
+services:
+  discord-squeeze-bot:
+    build: .
+    container_name: discord-squeeze-bot
+    restart: unless-stopped
+
+    env_file:
+      - .env
+
+    volumes:
+      - ./cache:/app/cache
+      - ./logs:/app/logs
+
+    working_dir: /app
+
+    command: python bot.py
