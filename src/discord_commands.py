@@ -15,6 +15,7 @@ from src.squeeze_scanner import (
     run_squeeze_scan,
 )
 from src.discord_embeds import (
+    add_reason_fields_to_embed,
     build_alert_history_embed,
     build_candidate_alert_embed,
     build_ticker_candidate_embed,
@@ -23,6 +24,7 @@ from src.discord_embeds import (
 from src.alert_state import (
     clear_all_alert_history,
     clear_ticker_alert_state,
+    get_daily_setup_recap,
     get_recent_alert_history,
     get_ticker_alert_state,
 )
@@ -281,6 +283,33 @@ def build_refresh_shorts_embed(summary: dict) -> discord.Embed:
     return embed
 
 
+def _format_state_value(value) -> str:
+    if value is None or value == "":
+        return "N/A"
+
+    return str(value)
+
+
+def _format_score_change(previous_score, current_score) -> str:
+    previous_text = _format_state_value(previous_score)
+    current_text = _format_state_value(current_score)
+
+    if previous_score is None:
+        return current_text
+
+    return f"{previous_text} → {current_text}"
+
+
+def _format_class_change(previous_classification, current_classification) -> str:
+    previous_text = _format_state_value(previous_classification)
+    current_text = _format_state_value(current_classification)
+
+    if previous_classification is None:
+        return current_text
+
+    return f"{previous_text} → {current_text}"
+
+
 def build_ticker_alert_state_embed(
     symbol: str,
     row: dict | None,
@@ -295,20 +324,46 @@ def build_ticker_alert_state_embed(
         embed.description = "No saved alert state found for this ticker."
         return embed
 
+    current_event_type = row.get("current_event_type") or row.get("last_event_type")
+    current_score = row.get("current_score", row.get("score"))
+    previous_score = row.get("previous_score")
+    current_classification = row.get("current_classification") or row.get("last_label")
+    previous_classification = row.get("previous_classification")
+
+    embed.description = (
+        f"Event: `{_format_state_value(current_event_type)}`\n"
+        f"Status: `{_format_state_value(current_classification)}`\n"
+        f"Expired: `{bool(row.get('expired', False))}` | "
+        f"Cooling Off: `{bool(row.get('cooling_off', False))}` | "
+        f"Active Today: `{bool(row.get('active_today', False))}`"
+    )
+
     embed.add_field(
-        name="Label / Type",
+        name="Score State",
         value=(
-            f'Last Label: `{row.get("last_label", "N/A")}`\n'
-            f'Alert Type: `{row.get("last_alert_type", "N/A")}`'
+            f"Score: `{_format_score_change(previous_score, current_score)}`\n"
+            f"Change: `{_format_state_value(row.get('score_change'))}`\n"
+            f"Peak Today: `{_format_state_value(row.get('peak_score_today'))}`"
         ),
         inline=True,
     )
 
     embed.add_field(
-        name="Rank / Score",
+        name="Classification",
         value=(
-            f'Rank: `#{row.get("rank", "N/A")}`\n'
-            f'Score: `{row.get("score", "N/A")}`'
+            f"Class: `{_format_class_change(previous_classification, current_classification)}`\n"
+            f"Peak Class: `{_format_state_value(row.get('peak_classification_today'))}`\n"
+            f"Last Alert Type: `{_format_state_value(row.get('last_alert_type'))}`"
+        ),
+        inline=True,
+    )
+
+    embed.add_field(
+        name="Rank / Alerts",
+        value=(
+            f"Rank: `#{_format_state_value(row.get('rank'))}`\n"
+            f"Alert Count Today: `{_format_state_value(row.get('alert_count_today', 0))}`\n"
+            f"Missed Scans: `{_format_state_value(row.get('missed_scan_count', 0))}`"
         ),
         inline=True,
     )
@@ -316,25 +371,29 @@ def build_ticker_alert_state_embed(
     embed.add_field(
         name="Signal",
         value=(
-            f'Move: `{row.get("percent_move", "N/A")}%`\n'
-            f'Rel Vol: `{row.get("relative_volume", "N/A")}x`'
+            f"Move: `{_format_state_value(row.get('previous_percent_move'))} → "
+            f"{_format_state_value(row.get('percent_move'))}%`\n"
+            f"Rel Vol: `{_format_state_value(row.get('previous_relative_volume'))} → "
+            f"{_format_state_value(row.get('relative_volume'))}x`\n"
+            f"Short Float: `{_format_state_value(row.get('short_float'))}`"
         ),
-        inline=True,
+        inline=False,
     )
 
     embed.add_field(
         name="Timing",
         value=(
-            f'Last Alert: `{format_generated_at(row.get("last_alert_at"))}`\n'
-            f'Cooling Off Alerted: '
-            f'`{format_generated_at(row.get("cooling_off_alerted_at"))}`'
+            f"First Seen: `{format_generated_at(row.get('first_seen_at'))}`\n"
+            f"Last Seen: `{format_generated_at(row.get('last_seen_at'))}`\n"
+            f"Last Alert: `{format_generated_at(row.get('last_alert_at'))}`\n"
+            f"Expired At: `{format_generated_at(row.get('expired_at'))}`"
         ),
         inline=False,
     )
 
     embed.add_field(
         name="Reason",
-        value=f'`{row.get("reason", "unknown")}`',
+        value=f"`{row.get('reason') or row.get('last_alert_reason') or 'No posted alert reason yet.'}`",
         inline=False,
     )
 
@@ -345,6 +404,134 @@ def build_ticker_alert_state_embed(
         value=f"`{tags}`",
         inline=False,
     )
+
+    add_reason_fields_to_embed(embed, row, state=row, include_components=True)
+
+    return embed
+
+
+def _format_recap_rows(rows: list[dict], empty: str = "None") -> str:
+    if not rows:
+        return empty
+
+    lines = []
+
+    for row in rows[:5]:
+        symbol = row.get("symbol", "UNKNOWN")
+        label = row.get("current_classification") or row.get("last_label") or "N/A"
+        score = row.get("current_score", row.get("score", "N/A"))
+        change = row.get("score_change")
+
+        if change is None:
+            change_text = ""
+        else:
+            try:
+                change_number = float(change)
+                sign = "+" if change_number > 0 else ""
+                change_text = f" ({sign}{round(change_number, 2)})"
+            except (TypeError, ValueError):
+                change_text = f" ({change})"
+
+        lines.append(f"• `{symbol}` — {label} — Score `{score}`{change_text}")
+
+    return "\n".join(lines)
+
+
+def build_daily_recap_embed(summary: dict) -> discord.Embed:
+    embed = discord.Embed(
+        title="Squeeze Setup Recap",
+        description=(
+            f"Trading Date: `{summary.get('trading_date', 'N/A')}`\n"
+            f"Tracked: `{summary.get('total_tracked', 0)}` | "
+            f"Active: `{summary.get('active_count', 0)}` | "
+            f"Cooling: `{summary.get('cooling_count', 0)}` | "
+            f"Expired: `{summary.get('expired_count', 0)}` | "
+            f"Alerted: `{summary.get('alerted_count', 0)}`"
+        ),
+        color=discord.Color.blue(),
+    )
+
+    embed.add_field(
+        name="Event Counts",
+        value=(
+            f"New: `{summary.get('new_discovery_count', 0)}`\n"
+            f"Upgrades: `{summary.get('upgrade_count', 0)}`\n"
+            f"Score Surges: `{summary.get('score_surge_count', 0)}`"
+        ),
+        inline=True,
+    )
+
+    embed.add_field(
+        name="Top Active",
+        value=_format_recap_rows(summary.get("top_active", [])),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="Biggest Improvers",
+        value=_format_recap_rows(summary.get("biggest_improvers", [])),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="Cooling Off",
+        value=_format_recap_rows(summary.get("cooling_off", [])),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="Quietly Expired",
+        value=_format_recap_rows(summary.get("expired", [])),
+        inline=False,
+    )
+
+    return embed
+
+
+def build_explain_embed(
+    symbol: str,
+    candidate: dict,
+    payload: dict,
+    state: dict | None = None,
+    rank: int | None = None,
+) -> discord.Embed:
+    label = (state or {}).get("current_classification") or "Live Check"
+
+    embed = discord.Embed(
+        title=f"Explain — {symbol}",
+        description=(
+            f"Status: `{label}`\n"
+            f"Score: `{candidate.get('score', 'N/A')}`\n"
+            f"Rank: `{f'#{rank}' if rank is not None else 'N/A'}`\n"
+            f"Checked: `{format_generated_at(payload.get('generated_at'))}`"
+        ),
+        color=discord.Color.blue(),
+    )
+
+    embed.add_field(
+        name="Live Data",
+        value=(
+            f"Price: `${candidate.get('price', 'N/A')}`\n"
+            f"Move: `{candidate.get('percent_move', 'N/A')}%`\n"
+            f"Rel Vol: `{candidate.get('relative_volume', 'N/A')}x`\n"
+            f"Short Float: `{candidate.get('short_float', 'Missing')}`"
+        ),
+        inline=False,
+    )
+
+    if state:
+        embed.add_field(
+            name="Saved State",
+            value=(
+                f"Event: `{state.get('current_event_type', 'N/A')}`\n"
+                f"Score Change: `{state.get('score_change', 'N/A')}`\n"
+                f"Peak Score Today: `{state.get('peak_score_today', 'N/A')}`\n"
+                f"Last Seen: `{format_generated_at(state.get('last_seen_at'))}`"
+            ),
+            inline=False,
+        )
+
+    add_reason_fields_to_embed(embed, candidate, state=state, include_components=True)
 
     return embed
 
@@ -565,6 +752,18 @@ class SqueezeCommandGroup(app_commands.Group):
 
         await interaction.followup.send(embed=embed)
 
+    @app_commands.command(
+        name="recap",
+        description="Show today's setup-monitor recap.",
+    )
+    async def recap(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+
+        summary = get_daily_setup_recap(limit=5)
+        embed = build_daily_recap_embed(summary)
+
+        await interaction.followup.send(embed=embed)
+
     @app_commands.command(name="top", description="Show cached top squeeze candidates.")
     async def top(self, interaction: discord.Interaction):
         await interaction.response.defer()
@@ -709,5 +908,67 @@ class SqueezeCommandGroup(app_commands.Group):
                 value=f"`{tags}`",
                 inline=False,
             )
+
+        await interaction.followup.send(embed=embed)
+
+    @app_commands.command(
+        name="explain",
+        description="Explain ticker using live data plus saved state.",
+    )
+    @app_commands.describe(symbol="Ticker symbol, like GME or AMC")
+    async def explain(self, interaction: discord.Interaction, symbol: str):
+        await interaction.response.defer()
+
+        clean_symbol = symbol.upper().strip()
+        cached_rank = None
+        cached_payload = load_latest_candidates()
+
+        if cached_payload is not None:
+            cached_candidates = (
+                cached_payload.get("all_candidates")
+                or cached_payload.get("candidates", [])
+            )
+
+            for index, cached_candidate in enumerate(cached_candidates, start=1):
+                if cached_candidate.get("symbol", "").upper() == clean_symbol:
+                    cached_rank = index
+                    break
+
+        single_payload = await asyncio.to_thread(
+            build_single_ticker_report,
+            clean_symbol,
+        )
+
+        if not single_payload.get("found"):
+            embed = discord.Embed(
+                title=f"Explain — {clean_symbol}",
+                description=single_payload.get(
+                    "error",
+                    "No market data was returned for this ticker.",
+                ),
+                color=discord.Color.orange(),
+            )
+            await interaction.followup.send(embed=embed)
+            return
+
+        candidate = single_payload["candidate"]
+        state = get_ticker_alert_state(clean_symbol)
+
+        embed = build_explain_embed(
+            symbol=clean_symbol,
+            candidate=candidate,
+            payload=single_payload,
+            state=state,
+            rank=cached_rank,
+        )
+
+        if not single_payload.get("passed_filters"):
+            failed_reasons = single_payload.get("failed_reasons", [])
+            if failed_reasons:
+                embed.add_field(
+                    name="Filter Notes",
+                    value="\n".join(f"• {reason}" for reason in failed_reasons[:5]),
+                    inline=False,
+                )
 
         await interaction.followup.send(embed=embed)

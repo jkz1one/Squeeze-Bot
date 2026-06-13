@@ -3,6 +3,11 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import config
+from src.reason_builder import (
+    build_reason_sections,
+    format_bullet_block,
+    format_component_block,
+)
 
 
 def format_generated_at(value: str | None) -> str:
@@ -134,6 +139,155 @@ def parse_conviction_upgrade_reason(reason: str | None) -> tuple[str | None, str
     return old_label, new_label
 
 
+def _format_number(value, decimals: int = 2) -> str:
+    if value is None:
+        return "N/A"
+
+    try:
+        number = float(value)
+
+    except (TypeError, ValueError):
+        return str(value)
+
+    if number.is_integer():
+        return str(int(number))
+
+    return str(round(number, decimals))
+
+
+def _format_change_line(
+    label: str,
+    current,
+    previous=None,
+    suffix: str = "",
+    prefix: str = "",
+    decimals: int = 2,
+) -> str:
+    current_text = f"{prefix}{_format_number(current, decimals)}{suffix}"
+
+    if previous is None:
+        return f"{label}: `{current_text}`"
+
+    previous_text = f"{prefix}{_format_number(previous, decimals)}{suffix}"
+
+    return f"{label}: `{previous_text} → {current_text}`"
+
+
+def _event_type_to_label(event_type: str | None, fallback_label: str) -> str:
+    if event_type == "NEW_DISCOVERY":
+        return "New Discovery"
+
+    if event_type == "UPGRADE":
+        return "Upgrade"
+
+    if event_type == "SCORE_SURGE":
+        return "Score Surge"
+
+    if event_type == "NEW_PEAK_SCORE":
+        return "New Peak Score"
+
+    if event_type == "COOLING_OFF":
+        return "Cooling Off"
+
+    if event_type == "REACTIVATED":
+        return "Reactivated"
+
+    if event_type == "DOWNGRADE":
+        return "Downgrade"
+
+    return fallback_label
+
+
+def _build_change_summary(
+    candidate: dict,
+    alert_type: str | None = None,
+) -> str:
+    lines = []
+
+    previous_score = candidate.get("_previous_score")
+    current_score = candidate.get("score")
+
+    if previous_score is not None:
+        lines.append(
+            _format_change_line(
+                "Score",
+                current_score,
+                previous_score,
+            )
+        )
+
+    previous_label = candidate.get("_previous_classification")
+    current_label = get_candidate_status_label(
+        candidate,
+        alert_type=alert_type,
+    )
+
+    if previous_label and previous_label != current_label:
+        lines.append(f"Class: `{previous_label} → {current_label}`")
+
+    previous_move = candidate.get("_previous_percent_move")
+    current_move = candidate.get("percent_move")
+
+    if previous_move is not None:
+        lines.append(
+            _format_change_line(
+                "Move",
+                current_move,
+                previous_move,
+                suffix="%",
+            )
+        )
+
+    previous_rel_vol = candidate.get("_previous_relative_volume")
+    current_rel_vol = candidate.get("relative_volume")
+
+    if previous_rel_vol is not None:
+        lines.append(
+            _format_change_line(
+                "Rel Vol",
+                current_rel_vol,
+                previous_rel_vol,
+                suffix="x",
+            )
+        )
+
+    peak_score = candidate.get("_peak_score_today")
+
+    if peak_score is not None:
+        lines.append(f"Peak Score Today: `{_format_number(peak_score)}`")
+
+    return "\n".join(lines)
+
+
+def add_reason_fields_to_embed(
+    embed: discord.Embed,
+    candidate: dict,
+    state: dict | None = None,
+    include_components: bool = True,
+) -> None:
+    """Attach explanation fields to a Discord embed."""
+    sections = build_reason_sections(candidate, state)
+
+    embed.add_field(
+        name="Drivers",
+        value=format_bullet_block(sections.get("drivers", [])),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="Risks",
+        value=format_bullet_block(sections.get("risks", [])),
+        inline=False,
+    )
+
+    if include_components:
+        embed.add_field(
+            name="Score Components",
+            value=format_component_block(sections.get("components", {})),
+            inline=False,
+        )
+
+
 def build_candidate_alert_embed(payload: dict) -> discord.Embed:
     """Build the multi-candidate embed used by /squeeze top."""
     candidates = payload.get("candidates", [])[: config.MAX_ALERTS_PER_SCAN]
@@ -207,16 +361,30 @@ def build_single_candidate_alert_embed(
     short_text = format_short_float(candidate.get("short_float"))
     generated_at = format_generated_at(payload.get("generated_at"))
 
+    event_type = candidate.get("_event_type")
+    event_label = _event_type_to_label(event_type, label)
+
     old_label, new_label = parse_conviction_upgrade_reason(reason)
 
     if old_label and new_label:
         title = f"{symbol} — Upgrade: {old_label} → {new_label}"
+    elif event_type == "REACTIVATED":
+        title = f"{symbol} — Reactivated"
+    elif event_type == "SCORE_SURGE":
+        title = f"{symbol} — Score Surge"
+    elif event_type == "NEW_PEAK_SCORE":
+        title = f"{symbol} — New Peak Score"
+    elif event_type == "NEW_DISCOVERY":
+        title = f"{symbol} — New Discovery: {label}"
+    elif event_type == "COOLING_OFF" or alert_type == "cooling_off":
+        title = f"{symbol} — Cooling Off"
     else:
         title = f"{symbol} — {label}"
 
     embed = discord.Embed(
         title=title,
         description=(
+            f"Event: `{event_label}`\n"
             f"Status: `{label}`\n"
             f"Rank: `#{rank}`\n"
             f"Score: `{score}`\n"
@@ -225,9 +393,20 @@ def build_single_candidate_alert_embed(
         color=get_candidate_color(candidate, alert_type=alert_type),
     )
 
-    if old_label and new_label and reason:
+    change_summary = _build_change_summary(candidate, alert_type=alert_type)
+
+    if change_summary:
         embed.add_field(
-            name="Alert Reason",
+            name="What Changed",
+            value=change_summary,
+            inline=False,
+        )
+
+    add_reason_fields_to_embed(embed, candidate, include_components=True)
+
+    if reason:
+        embed.add_field(
+            name="Why",
             value=f"`{reason}`",
             inline=False,
         )
@@ -332,6 +511,8 @@ def build_ticker_candidate_embed(
         value=f"`{tags}`",
         inline=False,
     )
+
+    add_reason_fields_to_embed(embed, candidate, include_components=True)
 
     embed.set_footer(
         text=(

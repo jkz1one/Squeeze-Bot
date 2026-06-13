@@ -11,7 +11,9 @@ from src.market_hours import is_market_open, market_status_text, now_et
 from src.alert_state import (
     get_candidate_label,
     get_previous_candidate_alert,
+    mark_missing_candidates_expired,
     record_candidate_alert,
+    record_candidate_seen,
     should_post_cooling_off_alert,
     should_post_discovery_alert,
 )
@@ -181,13 +183,19 @@ class SqueezeBot(discord.Client):
         all_candidates = payload.get("all_candidates") or payload.get("candidates", [])
 
         if not all_candidates:
-            logger.info("Scheduled scan ran but found no candidates. No alert posted.")
+            expired_count = mark_missing_candidates_expired(set())
+            logger.info(
+                "Scheduled scan ran but found no candidates. No alert posted. "
+                "Quiet expirations marked: %s",
+                expired_count,
+            )
             return
 
         sent_count = 0
         skipped_count = 0
         evaluated_count = 0
         eligible_alerts = []
+        seen_symbols = set()
 
         scheduled_alert_limit = int(
             getattr(
@@ -225,6 +233,9 @@ class SqueezeBot(discord.Client):
             symbol = candidate.get("symbol", "UNKNOWN")
             previous = get_previous_candidate_alert(symbol)
 
+            if symbol and symbol != "UNKNOWN":
+                seen_symbols.add(symbol.upper().strip())
+
             should_alert, discovery_reason = should_post_discovery_alert(
                 candidate,
                 previous,
@@ -244,6 +255,10 @@ class SqueezeBot(discord.Client):
                     alert_type = "cooling_off"
                 else:
                     reason = f"{discovery_reason} | {cooling_reason}"
+
+            # Save per-scan setup state after event classification, but keep using
+            # the pre-update previous row above for alert decisions.
+            record_candidate_seen(candidate, rank, previous)
 
             if not should_alert:
                 skipped_count += 1
@@ -268,12 +283,15 @@ class SqueezeBot(discord.Client):
                 }
             )
 
+        expired_count = mark_missing_candidates_expired(seen_symbols)
+
         if not eligible_alerts:
             logger.info(
                 "Scheduled scan found no eligible alert state changes. "
-                "Evaluated: %s | Candidates: %s",
+                "Evaluated: %s | Candidates: %s | Quiet expirations marked: %s",
                 evaluated_count,
                 len(all_candidates),
+                expired_count,
             )
             return
 
@@ -355,12 +373,14 @@ class SqueezeBot(discord.Client):
 
         logger.info(
             "Scheduled scan alert pass complete. "
-            "Sent: %s | Skipped: %s | Eligible: %s | Evaluated: %s | All Candidates: %s",
+            "Sent: %s | Skipped: %s | Eligible: %s | Evaluated: %s | "
+            "All Candidates: %s | Quiet Expirations: %s",
             sent_count,
             skipped_count,
             len(eligible_alerts),
             evaluated_count,
             len(all_candidates),
+            expired_count,
         )
 
     @scheduled_scan_loop.before_loop

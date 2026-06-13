@@ -95,6 +95,7 @@ SQUEEZE_PCT_MOVE_THRESH = get_float("SQUEEZE_PCT_MOVE_THRESH", 1.00)
 # Alert memory / re-alert behavior
 ALERT_COOLDOWN_MODE = os.getenv("ALERT_COOLDOWN_MODE", "trading_day")
 ALERT_COOLDOWN_MINUTES = get_int("ALERT_COOLDOWN_MINUTES", 60)
+EXPIRATION_MISSED_SCANS = get_int("EXPIRATION_MISSED_SCANS", 2)
 
 ENABLE_SCORE_IMPROVEMENT_REALERT = get_bool(
     "ENABLE_SCORE_IMPROVEMENT_REALERT",
@@ -130,3 +131,8 @@ ANCHOR_TICKERS = [
 FORCE_MARKET_OPEN_FOR_TESTING = get_bool("FORCE_MARKET_OPEN_FOR_TESTING", False)
 
 ALERT_HISTORY_PATH = os.getenv("ALERT_HISTORY_PATH", "cache/alert_history.json")
+# Phase 6 explanation/recap controls
+# ALERT_COOLDOWN_MODE options currently supported by alert_state.py:
+# - trading_day: current daily event-aware behavior
+# - minutes: same-strength realerts/new-peak alerts respect ALERT_COOLDOWN_MINUTES
+ENABLE_REASON_BUILDER = get_bool("ENABLE_REASON_BUILDER", True)
